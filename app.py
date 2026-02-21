@@ -32,15 +32,22 @@ except ImportError:
 # =========================
 st.set_page_config(page_title="量子神託 - 縁の球体", layout="wide")
 from pathlib import Path
+import streamlit as st
 
-# ======================
-# BGM設定
-# ======================
-BGM_PATH = Path("assets/bgm.mp3")
+BGM_PATH = Path("assets/bgm.mp3")  # mp4なら bgm.mp4
+BGM_FORMAT = "audio/mp3"           # mp4なら "audio/mp4"
 
-if "bgm_on" not in st.session_state:
-    st.session_state.bgm_on = True
+with st.sidebar:
+    st.markdown("### 🎵 音楽")
+    bgm_on = st.toggle("BGMを再生", value=True)
 
+    if bgm_on:
+        if BGM_PATH.exists():
+            audio_bytes = BGM_PATH.read_bytes()
+            st.audio(audio_bytes, format=BGM_FORMAT)
+            st.caption(f"✅ BGM loaded: {BGM_PATH} ({len(audio_bytes)/1024:.1f} KB)")
+        else:
+            st.error(f"⚠ BGMファイルが見つかりません: {BGM_PATH}")
 # セッション状態の初期化（最初に実行）
 if "excel_quotes_loaded" not in st.session_state:
     st.session_state.excel_quotes_loaded = False
