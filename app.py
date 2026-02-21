@@ -98,8 +98,26 @@ init_session_state()
 # ============================================================
 # 0.6) BGM（サイドバーのみ）
 # ============================================================
-BGM_PATH = Path("assets/bgm.mp3")   # mp4なら assets/bgm.mp4
-BGM_FORMAT = "audio/mp3"           # mp4なら audio/mp4
+from pathlib import Path
+import streamlit as st
+
+BGM_PATH = Path("assets/bgm.mp3")
+BGM_FORMAT = "audio/mpeg"  # mp3はこれが安定
+
+if "bgm_on" not in st.session_state:
+    st.session_state["bgm_on"] = False  # 初期はOFF推奨（自動再生と誤解されるため）
+
+with st.sidebar:
+    st.markdown("### 🎵 音楽")
+    st.session_state["bgm_on"] = st.toggle("BGMを再生（▶を押すと鳴ります）", value=st.session_state["bgm_on"])
+
+    if st.session_state["bgm_on"]:
+        if BGM_PATH.exists():
+            audio_bytes = BGM_PATH.read_bytes()
+            st.audio(audio_bytes, format=BGM_FORMAT)
+            st.caption("※ブラウザ制限により自動再生はできません。▶ を押してください。")
+        else:
+            st.error(f"⚠ BGMが見つかりません: {BGM_PATH}（assets/bgm.mp3 をGitHubに追加してください）")
 
 # ============================================================
 # 1) グローバル単語DB（他の人の言葉）
