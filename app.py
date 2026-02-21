@@ -31,6 +31,15 @@ except ImportError:
 # 0) ページ設定 + CSS（宇宙）
 # =========================
 st.set_page_config(page_title="量子神託 - 縁の球体", layout="wide")
+from pathlib import Path
+
+# ======================
+# BGM設定
+# ======================
+BGM_PATH = Path("assets/bgm.mp3")
+
+if "bgm_on" not in st.session_state:
+    st.session_state.bgm_on = True
 
 # セッション状態の初期化（最初に実行）
 if "excel_quotes_loaded" not in st.session_state:
@@ -1218,6 +1227,12 @@ with right:
         if keywords:
             st.write(f"**選択された格言**: {q.get('quote', '')[:100]}...")
             st.write(f"**出所**: {q.get('source', '—')}")
+
+    st.markdown("### 🎵 音楽")
+    st.session_state.bgm_on = st.toggle("BGMを再生", value=st.session_state.bgm_on)
+
+    if st.session_state.bgm_on and BGM_PATH.exists():
+        st.audio(str(BGM_PATH), format="audio/mp3")
     
     st.markdown(f"#### 「{q['quote']}」")
     st.markdown("---")
