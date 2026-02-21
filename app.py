@@ -756,16 +756,65 @@ for w in words:
             colors.append("rgba(255,255,255,0.60)")
         labels.append(w)
 
-fig.add_trace(go.Scatter3d(
-    x=pos[:, 0], y=pos[:, 1], z=pos[:, 2],
-    mode="markers+text",
-    text=labels,
-    textposition="top center",
-    textfont=dict(size=18, color="rgba(255,255,255,1.0)"),
-    marker=dict(size=sizes, color=colors, line=dict(width=1, color="rgba(0,0,0,0.10)")),
-    hovertemplate="<b>%{text}</b><extra></extra>",
-    showlegend=False
-))
+# --- 球体（言葉）---
+sizes, colors, labels = [], [], []
+for w in words:
+    energy = energies_dict.get(w, 0.0)
+    if w in center_set:
+        sizes.append(28)
+        colors.append("rgba(255,235,100,0.98)")
+        labels.append(w)
+    else:
+        en = min(1.0, abs(energy) / 3.0)
+        sizes.append(12 + int(8 * en))
+        if energy < -1.5:
+            colors.append("rgba(180,220,255,0.85)")
+        elif energy < -0.5:
+            colors.append("rgba(220,240,255,0.75)")
+        else:
+            colors.append("rgba(255,255,255,0.60)")
+        labels.append(w)
+
+# ★中心語とそれ以外で分ける（中心語ラベルを赤にする）
+center_idx = [i for i, w in enumerate(labels) if w in center_set]
+other_idx  = [i for i, w in enumerate(labels) if w not in center_set]
+
+# ① それ以外（白文字）
+if other_idx:
+    oi = np.array(other_idx, dtype=int)
+    fig.add_trace(go.Scatter3d(
+        x=pos[oi, 0], y=pos[oi, 1], z=pos[oi, 2],
+        mode="markers+text",
+        text=[labels[i] for i in oi],
+        textposition="top center",
+        textfont=dict(size=18, color="rgba(255,255,255,1.0)"),
+        marker=dict(
+            size=[sizes[i] for i in oi],
+            color=[colors[i] for i in oi],
+            line=dict(width=1, color="rgba(0,0,0,0.10)")
+        ),
+        hovertemplate="<b>%{text}</b><extra></extra>",
+        showlegend=False
+    ))
+
+# ② 中心語（赤文字）
+if center_idx:
+    ci = np.array(center_idx, dtype=int)
+    fig.add_trace(go.Scatter3d(
+        x=pos[ci, 0], y=pos[ci, 1], z=pos[ci, 2],
+        mode="markers+text",
+        text=[labels[i] for i in ci],
+        textposition="top center",
+        textfont=dict(size=24, color="rgba(255,80,80,1.0)"),  # ★赤
+        marker=dict(
+            size=[sizes[i] for i in ci],
+            color=[colors[i] for i in ci],
+            line=dict(width=2, color="rgba(255,80,80,0.8)")
+        ),
+        hovertemplate="<b>%{text}</b><br>中心語<extra></extra>",
+        showlegend=False
+    ))
+
 
 # 中心語の“光の層”（固定：点滅しない）
 for cidx in center_indices:
