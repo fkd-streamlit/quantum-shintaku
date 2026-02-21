@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 # ============================================================
 # QUBO × 量子神託 UI（Streamlit + Plotly）
-# - 入力文からキーワード抽出
-# - キーワード中心に「エネルギーが近い単語」が集まるネットワークを構築
-# - 3Dで“球体（言葉）＋縁（線）＋星屑（宇宙）”を描画
-# - 格言は「出所（典拠/作者/意訳/創作）」も表示
-# - マウスで回転/ズーム/リセット可能
+# 目的：点滅（フラッシュ）を排除し、静的で見やすい表示へ
+# - 自動更新（st_autorefresh）を廃止
+# - 星屑のまたたきを固定（time seedを使わない）
+# - 位置のゆらぎは再計算時のみ（通常は静止）
 # ============================================================
 
 import os
@@ -17,14 +16,6 @@ from typing import Dict, List, Tuple
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-
-# 自動更新（任意依存）
-try:
-    from streamlit_autorefresh import st_autorefresh
-    AUTORF_OK = True
-except Exception:
-    AUTORF_OK = False
-    st_autorefresh = None
 
 # pandas（Excel読み込み用）
 try:
@@ -105,7 +96,7 @@ def init_session_state():
 init_session_state()
 
 # ============================================================
-# 0.6) BGM（サイドバーに統一）
+# 0.6) BGM（サイドバーのみ）
 # ============================================================
 BGM_PATH = Path("assets/bgm.mp3")   # mp4なら assets/bgm.mp4
 BGM_FORMAT = "audio/mp3"           # mp4なら audio/mp4
@@ -193,12 +184,10 @@ EXCEL_DEFAULT = "quantum_shintaku_pack_v3_with_sense_20260213_oposite_modify_wit
 
 @st.cache_data(show_spinner=False)
 def load_quotes_from_excel_cached(excel_path: str) -> List[Dict]:
-    """ExcelのQUOTESシートから格言を読み込む（キャッシュ）"""
     if not PANDAS_AVAILABLE:
         return []
     if not excel_path or not os.path.exists(excel_path):
         return []
-
     try:
         df = pd.read_excel(excel_path, sheet_name="QUOTES", engine="openpyxl")
     except Exception:
@@ -313,7 +302,6 @@ def build_qubo_matrix_for_words(words: List[str], rng: np.random.Generator, jitt
     Q: Dict[Tuple[int, int], float] = {}
     for i in range(n):
         Q[(i, i)] = -0.5
-
     for i in range(n):
         for j in range(i + 1, n):
             e = calculate_energy_between_words(words[i], words[j], rng, jitter)
@@ -474,7 +462,9 @@ def place_words_3d(words: List[str], center_set: set, rng: np.random.Generator,
         energies_dict=energies_dict,
         words_list=words
     )
-    pos += rng.normal(0, noise, size=pos.shape)
+    # 位置ゆらぎは「再計算時だけ」加える（通常表示は静止）
+    if noise > 0:
+        pos += rng.normal(0, noise, size=pos.shape)
     return pos
 
 # ============================================================
@@ -551,10 +541,10 @@ with st.sidebar:
     top_n = st.slider("抽出キーワード数", 2, 10, 5, 1)
     n_total = st.slider("空間に出す単語数（中心＋周辺）", 15, 60, 30, 1)
 
-    auto = st.toggle("ゆらぎ（自動更新）", value=True)
-    refresh_ms = st.slider("更新間隔(ms)", 200, 1500, 650, 50)
+    # 点滅を排除するため、自動更新は廃止（トグルも撤去）
+    st.caption("※点滅防止のため、自動更新（ゆらぎ）は無効化しています。")
 
-    noise = st.slider("位置のゆらぎ", 0.00, 0.20, 0.06, 0.01)
+    noise = st.slider("位置のゆらぎ（再計算時のみ）", 0.00, 0.20, 0.06, 0.01)
     jitter = st.slider("エネルギー揺らぎ", 0.00, 0.25, 0.10, 0.01)
 
     qubo_iterations = st.slider(
@@ -565,7 +555,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 宇宙の密度")
     star_count = st.slider("星屑の数", 200, 2200, 900, 50)
-    star_twinkle = st.slider("星のまたたき", 0.00, 0.15, 0.04, 0.01)
+    # 点滅防止：またたきは固定（スライダーを撤去）
+    st.caption("※星のまたたき（点滅）は無効化しています。")
 
     st.markdown("---")
     enable_zoom = st.toggle("マウスホイールでズーム", value=True)
@@ -584,19 +575,12 @@ with st.sidebar:
             st.caption("⚠ assets/bgm.mp3 が見つかりません（GitHubに追加してください）")
 
 # ============================================================
-# 7.5) 再計算判定 / 自動更新
+# 7.5) 再計算判定（静止表示）
 # ============================================================
-params_hash = f"{user_input}_{top_n}_{n_total}_{noise}_{jitter}_{qubo_iterations}"
+params_hash = f"{user_input}_{top_n}_{n_total}_{noise}_{jitter}_{qubo_iterations}_{star_count}"
 input_changed = user_input != st.session_state["last_user_input"]
 params_changed = params_hash != st.session_state["last_params_hash"]
 needs_recalc = input_changed or params_changed
-
-# 自動更新（入力やパラメータが変わっていない時だけ）
-if auto and (not needs_recalc):
-    if AUTORF_OK:
-        st_autorefresh(interval=refresh_ms, key="refresh")
-    else:
-        st.caption("⚠ streamlit_autorefresh が未導入のため自動更新は無効です")
 
 if needs_recalc:
     st.session_state["last_user_input"] = user_input
@@ -643,7 +627,7 @@ def compute_all():
 
     progress_bar.progress(100)
     status_text.text("✅ 計算完了！")
-    time.sleep(0.2)
+    time.sleep(0.15)
     progress_placeholder.empty()
 
     st.session_state["network"] = network
@@ -651,23 +635,12 @@ def compute_all():
     st.session_state["keywords"] = keywords
     st.session_state["center_set"] = center_set
 
-# 計算実行（初回 or 変更時）
+# 初回 or 変更時のみ計算（通常は静止）
 if (st.session_state["network"] is None) or needs_recalc:
     compute_all()
-else:
-    # 自動更新中は “見た目の揺らぎ” だけ追加
-    network = st.session_state["network"]
-    pos = st.session_state["pos"].copy()
-    keywords = st.session_state["keywords"]
-    center_set = st.session_state["center_set"]
 
-    if auto:
-        rng = np.random.default_rng(int(time.time() * 1000) % (2**32 - 1))
-        pos = pos + rng.normal(0, noise * 0.6, size=pos.shape)
-
-# 必須変数を取得
 network = st.session_state["network"]
-pos = pos if "pos" in locals() else st.session_state["pos"]
+pos = st.session_state["pos"]
 keywords = st.session_state["keywords"]
 center_set = st.session_state["center_set"]
 
@@ -680,15 +653,15 @@ if network is None or pos is None or len(network.get("words", [])) == 0:
 
 fig = go.Figure()
 
-# 星屑（背景）
+# --- 星屑（点滅排除：完全固定） ---
+# 固定seedで配置も透明度もサイズも固定
 star_rng = np.random.default_rng(12345)
 sx = star_rng.uniform(-3.2, 3.2, star_count)
 sy = star_rng.uniform(-2.4, 2.4, star_count)
 sz = star_rng.uniform(-2.0, 2.0, star_count)
 
-star_rng_tw = np.random.default_rng(int(time.time() * 1000) % (2**32 - 1))
-tw = np.clip(star_rng_tw.normal(0, star_twinkle, size=star_count), -0.15, 0.15)
-alpha = np.clip(0.22 + tw, 0.10, 0.42)
+# 透明度固定（点滅しない）
+alpha = np.full(star_count, 0.22, dtype=float)
 star_size = star_rng.uniform(1.0, 2.4, star_count)
 star_colors = [f"rgba(255,255,255,{a})" for a in alpha]
 
@@ -704,7 +677,7 @@ words = network["words"]
 energies_dict = network.get("energies", {})
 center_indices = network.get("center_indices", [])
 
-# 中心語→各単語の線
+# --- 中心語→各単語の線 ---
 for cidx in center_indices:
     if cidx >= len(words):
         continue
@@ -737,7 +710,7 @@ for cidx in center_indices:
             showlegend=False
         ))
 
-# 単語間エッジ
+# --- 単語間エッジ ---
 for i, j, e in network["edges"]:
     if i in center_indices or j in center_indices:
         continue
@@ -764,7 +737,7 @@ for i, j, e in network["edges"]:
         showlegend=False
     ))
 
-# 球体（言葉）
+# --- 球体（言葉）---
 sizes, colors, labels = [], [], []
 for w in words:
     energy = energies_dict.get(w, 0.0)
@@ -783,10 +756,6 @@ for w in words:
             colors.append("rgba(255,255,255,0.60)")
         labels.append(w)
 
-# 全単語を一括描画（中心語だけ文字色を変える）
-text_colors = ["rgba(255,80,80,1.0)" if w in center_set else "rgba(255,255,255,1.0)" for w in labels]
-text_sizes = [24 if w in center_set else 18 for w in labels]
-
 fig.add_trace(go.Scatter3d(
     x=pos[:, 0], y=pos[:, 1], z=pos[:, 2],
     mode="markers+text",
@@ -798,7 +767,7 @@ fig.add_trace(go.Scatter3d(
     showlegend=False
 ))
 
-# 中心語の“光の層”
+# 中心語の“光の層”（固定：点滅しない）
 for cidx in center_indices:
     if cidx >= len(words):
         continue
@@ -845,10 +814,8 @@ plotly_config = {
 left, right = st.columns([2.0, 1.0], gap="large")
 
 with left:
-    if auto and (not needs_recalc):
-        st.caption(f"🔄 自動更新中（{refresh_ms}ms間隔） - 球体がゆらぎます")
     st.plotly_chart(fig, use_container_width=True, config=plotly_config)
-    st.caption("単語（球体）と縁（線）。マウスで回転・ズームできます。")
+    st.caption("単語（球体）と縁（線）。マウスで回転・ズームできます。（点滅なし）")
 
 with right:
     st.markdown("### 📊 現在の状態")
