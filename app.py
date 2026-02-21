@@ -101,7 +101,7 @@ init_session_state()
 from pathlib import Path
 import streamlit as st
 
-BGM_PATH = Path("assets/bgm.mp3")
+BGM_PATH = Path("assets/bgm.mp4")
 BGM_FORMAT = "audio/mpeg"  # mp3はこれが安定
 
 if "bgm_on" not in st.session_state:
