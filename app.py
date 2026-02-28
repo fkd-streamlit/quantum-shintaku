@@ -23,6 +23,12 @@
 # 5) 点滅排除
 #    - 自動更新なし／星屑固定／同条件なら同配置（seed固定）
 # ============================================================
+# app.py 先頭（これが最強に安全）
+import streamlit as st
+
+st.set_page_config(page_title="量子神託 - 縁の球体", layout="wide")
+
+# ここから下で、他のimportをする（numpy/pandas/plotly等）
 import os
 import re
 import io
@@ -30,14 +36,6 @@ import zlib
 import time
 import hashlib
 import mimetypes
-import streamlit as st
-
-st.set_page_config(
-    page_title="量子神託 - 縁の球体",
-    layout="wide"
-)
-
-# ここから他のst.xxxを書く
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
