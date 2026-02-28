@@ -3,32 +3,35 @@
 # app.py 量子神託（試作）— 縁の球体（QUBO × アート）
 #
 # ✅ この完全版で解決すること
-# 1) StreamlitAPIException回避
+# 1) StreamlitSetPageConfigMustBeFirstCommandError 回避
+#    - st.set_page_config は「最初のStreamlitコマンドとして1回だけ」
+#
+# 2) StreamlitAPIException 回避
 #    - 「key付きwidgetの値を st.session_state に代入しない」
-#    - 「quotes_meta / famous_quotes を st.session_state に保存しない（ローカル変数で保持）」
+#    - widgetは key= を使い、参照は st.session_state.get(...) で行う
 #
-# 2) Excel（QUOTESワークシート）読み込み
-#    - サイドバーでアップロードして読む（推奨）
-#    - 同梱Excel（任意）も読める（ファイル名をEXCEL_DEFAULT_PATHに設定）
+# 3) Excel（QUOTESワークシート）読み込み
+#    - サイドバーからアップロードして読む（推奨）
+#    - 同梱Excel（任意）も読める（候補パスを複数用意）
 #
-# 3) BGMが鳴らない問題の切り分け＆フォールバック
-#    - assets/bgm.mp3 があれば最優先（最も安定）
-#    - 次に assets/bgm.mp4 を bytesで st.audio（audio/mp4）
-#    - 鳴らない場合は st.video フォールバック
-#    - さらにダウンロードボタンで「mp4に音が入ってるか」確認可能
+# 4) BGM（mp3/mp4）再生の安定化
+#    - assets/bgm.mp3 を最優先（最も安定）
+#    - 次に assets/bgm.mp4 を bytes で st.audio(audio/mp4)
+#    - 鳴らない場合は st.video フォールバック + ダウンロード確認
 #
-# 4) 格言が出ない問題を減らす
-#    - 選択語から候補が必ず返るスコアリング（ゼロ回避）
+# 5) 格言が出ない問題を減らす
+#    - 候補が必ず返るスコアリング（ゼロ回避）
 #
-# 5) 点滅排除
+# 6) 点滅排除
 #    - 自動更新なし／星屑固定／同条件なら同配置（seed固定）
 # ============================================================
-# app.py 先頭（これが最強に安全）
+
 import streamlit as st
 
+# ★必ずここが最初のStreamlitコマンド（1回だけ）
 st.set_page_config(page_title="量子神託 - 縁の球体", layout="wide")
 
-# ここから下で、他のimportをする（numpy/pandas/plotly等）
+# --- 以降は他import ---
 import os
 import re
 import io
@@ -41,7 +44,6 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import plotly.graph_objects as go
-import streamlit as st
 
 # pandas（Excel読み込み用）
 try:
@@ -53,10 +55,8 @@ except Exception:
 
 
 # ============================================================
-# 0) ページ設定 + CSS
+# 0) CSS
 # ============================================================
-st.set_page_config(page_title="量子神託 - 縁の球体", layout="wide")
-
 SPACE_CSS = """
 <style>
 .stApp{
@@ -207,8 +207,12 @@ BASE_FAMOUS_QUOTES = [
      "note":"公開前に典拠確定推奨"},
 ]
 
-# 同梱Excel（任意）: リポジトリ直下に置く場合
-EXCEL_DEFAULT_PATH = "quantum_shintaku_pack_v3_with_sense_20260213_oposite_modify (2).xlsx"
+# 同梱Excel（任意）: いくつか候補名を許容（Cloudで名前が変わりがち）
+EXCEL_DEFAULT_CANDIDATES = [
+    "quantum_shintaku_pack_v3_with_sense_20260213_oposite_modify (2).xlsx",
+    "quantum_shintaku_pack_v3_with_sense_20260213_oposite_modify.xlsx",
+    "quantum_shintaku_pack_v3_with_sense_20260213_oposite_modify_with_lr022101.xlsx",
+]
 
 def _hash_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
@@ -247,6 +251,7 @@ def load_quotes_from_excel_bytes(excel_bytes: bytes, file_hash: str) -> List[Dic
 def build_famous_quotes(excel_bytes: Optional[bytes]) -> Tuple[List[Dict], int]:
     fam = list(BASE_FAMOUS_QUOTES)
     excel_quotes: List[Dict] = []
+
     if excel_bytes:
         h = _hash_bytes(excel_bytes)
         excel_quotes = load_quotes_from_excel_bytes(excel_bytes, file_hash=h)
@@ -506,7 +511,6 @@ def quote_candidates_for_word(word: str, famous_quotes: List[Dict], max_n: int =
         score = 0.0
         ks_low = [str(k).strip().lower() for k in ks]
 
-        # キーワード一致
         if w2 in ks_low:
             score += 6.0
         else:
@@ -514,13 +518,11 @@ def quote_candidates_for_word(word: str, famous_quotes: List[Dict], max_n: int =
                 if (w2 in k) or (k in w2):
                     score += 2.5
 
-        # 2-gram類似
         q_bg = _bigrams(quote) | _bigrams(ks_join)
         inter = len(w_bg & q_bg)
         if inter > 0:
             score += 0.6 * inter
 
-        # 本文含有
         if w2 and (w2 in quote.lower()):
             score += 1.0
 
@@ -528,7 +530,6 @@ def quote_candidates_for_word(word: str, famous_quotes: List[Dict], max_n: int =
 
     scored.sort(key=lambda x: (-x[0], (x[1].get("quote") or "")))
 
-    # ★必ず返す（候補ゼロ回避）
     return [q for _, q in scored[:max_n]] if scored else famous_quotes[:max_n]
 
 def select_relevant_quote(keywords: List[str], famous_quotes: List[Dict]) -> Dict[str, str]:
@@ -548,7 +549,7 @@ def make_seed(s: str) -> int:
 
 
 # ============================================================
-# 7) UI（サイドバー）
+# 7) UI
 # ============================================================
 st.title("量子神託（試作）— 縁の球体（QUBO × アート）")
 
@@ -570,17 +571,23 @@ with st.sidebar:
         source_label = "アップロード"
         st.success("Excel（アップロード）を読み込み対象に設定しました。")
     else:
-        if os.path.exists(EXCEL_DEFAULT_PATH):
+        # 同梱Excel候補を順に探す
+        found_path = None
+        for p in EXCEL_DEFAULT_CANDIDATES:
+            if os.path.exists(p):
+                found_path = p
+                break
+        if found_path:
             try:
-                excel_bytes = Path(EXCEL_DEFAULT_PATH).read_bytes()
-                source_label = f"同梱: {EXCEL_DEFAULT_PATH}"
+                excel_bytes = Path(found_path).read_bytes()
+                source_label = f"同梱: {found_path}"
                 st.info("Excel（同梱）を読み込み対象に設定しました。")
             except Exception:
                 excel_bytes = None
         else:
             st.caption("Excel未指定：BASEのみで動作します。")
 
-    # ★ここで作る格言DBはローカル変数（session_stateに保存しない）
+    # ★ローカル変数で保持（session_stateに保存しない）
     famous_quotes, excel_loaded = build_famous_quotes(excel_bytes)
     quotes_sig = f"{source_label}_{excel_loaded}"
 
@@ -590,14 +597,12 @@ with st.sidebar:
     st.toggle("BGMを再生（▶を押すと鳴ります）", key="bgm_on")
 
     if st.session_state.get("bgm_on", False):
-        # 最優先：mp3（最も安定）
         if MP3_PATH.exists():
             b = MP3_PATH.read_bytes()
             st.caption(f"再生: {MP3_PATH} / {len(b)/1024/1024:.2f}MB")
             st.audio(b, format="audio/mpeg")
             st.caption("※ブラウザ制限により自動再生はできません。▶ を押してください。")
 
-        # 次：mp4
         elif MP4_PATH.exists():
             b = MP4_PATH.read_bytes()
             mime, _ = mimetypes.guess_type(str(MP4_PATH))
