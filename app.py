@@ -606,16 +606,40 @@ with st.sidebar:
     st.session_state["famous_quotes"] = famous_quotes
     st.session_state["quotes_meta"] = {"loaded": excel_loaded, "source": source_label}
 
-    st.markdown("---")
-    st.markdown("### 🎵 音楽")
-    st.session_state["bgm_on"] = st.toggle("BGMを再生（▶を押すと鳴ります）", value=st.session_state.get("bgm_on", False))
-    if st.session_state["bgm_on"]:
-        if BGM_PATH.exists():
-            st.audio(BGM_PATH.read_bytes(), format=BGM_FORMAT)
-            st.caption("※ブラウザ制限により自動再生はできません。▶ を押してください。")
-        else:
-            st.error(f"⚠ BGMが見つかりません: {BGM_PATH}（assets/bgm.mp4 をGitHubに追加してください）")
+import mimetypes
 
+st.markdown("---")
+st.markdown("### 🎵 音楽")
+
+st.session_state["bgm_on"] = st.toggle(
+    "BGMを再生（▶を押すと鳴ります）",
+    value=st.session_state.get("bgm_on", False)
+)
+
+if st.session_state["bgm_on"]:
+    if BGM_PATH.exists():
+        bgm_bytes = BGM_PATH.read_bytes()
+
+        # MIMEを自動判定
+        mime, _ = mimetypes.guess_type(str(BGM_PATH))
+        mime = mime or "audio/mp4"
+
+        st.caption(f"形式: {mime} / サイズ: {len(bgm_bytes)/1024/1024:.2f} MB")
+
+        try:
+            # まず audio として再生
+            st.audio(bgm_bytes, format=mime)
+
+            # mp4が鳴らない環境向けフォールバック
+            if str(BGM_PATH).lower().endswith(".mp4"):
+                with st.expander("🔁 再生できない場合はこちら（videoフォールバック）"):
+                    st.video(bgm_bytes, format="video/mp4")
+
+        except Exception as e:
+            st.error(f"再生エラー: {e}")
+            st.caption("mp4で再生できない場合は mp3 形式への変換を推奨します。")
+    else:
+        st.error(f"⚠ BGMが見つかりません: {BGM_PATH}（assets/bgm.mp4 をGitHubに追加してください）")
     st.markdown("---")
     st.markdown("### 今の気持ち（入力）")
     user_input = st.text_area(
