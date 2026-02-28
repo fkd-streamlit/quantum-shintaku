@@ -23,7 +23,26 @@
 # 5) 点滅排除
 #    - 自動更新なし／星屑固定／同条件なら同配置（seed固定）
 # ============================================================
+from pathlib import Path
+import streamlit as st
 
+MP3_PATH = Path("assets/bgm.mp3")
+
+st.markdown("### 🎵 音楽（診断）")
+st.toggle("BGMを再生", key="bgm_on")
+
+if st.session_state.get("bgm_on", False):
+    if MP3_PATH.exists():
+        b = MP3_PATH.read_bytes()
+        st.write("✅ bgm.mp3 を発見")
+        st.write(f"サイズ: {len(b)} bytes")
+        st.audio(b, format="audio/mpeg")
+        st.download_button("bgm.mp3 をダウンロードして確認", data=b, file_name="bgm.mp3", mime="audio/mpeg")
+        st.info("▶を押して再生。鳴らない場合は、ダウンロードしてPCで再生して音が入っているか確認。")
+    else:
+        st.error(f"❌ 見つかりません: {MP3_PATH.resolve()}")
+        st.write("現在の作業ディレクトリ:", str(Path().resolve()))
+        st.write("assets配下一覧:", [p.name for p in Path("assets").glob("*")] if Path("assets").exists() else "assetsフォルダがありません")
 import os
 import re
 import io
