@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 # ============================================================
 # app.py 量子神託（試作）— 縁の球体（QUBO × アート）
-# 仕様（ご要望反映）:
-# - QUOTESワークシート入りExcelをアップロードして読み込む（st.file_uploader）
-# - 既定Excel（ローカル/同梱）がある場合はそれも読める
-# - BGMは assets/bgm.mp4（st.audio + audio/mp4）
-# - 点滅（フラッシュ）を排除：自動更新なし、星屑固定、同条件なら配置固定（seed固定）
-# - Plotlyの線トレースを集約して軽量化（None区切り）
-# - 「QUBOを使っている感」を右側で可視化（Q行列ヒートマップ/強い結びつき）
-# - 「気になる単語→格言候補」導線
+#
+# ✅ 改善点（今回の不具合対応＋強化）
+# - NameError対策：UI値はすべて session_state から取得（key付与）
+# - Excel：QUOTESワークシート入り.xlsx をアップロードして読み込み（pandas + openpyxl）
+# - 格言候補が出ない問題：2-gram一致で「必ず候補TopN」を返す強化版
+# - BGM：assets/bgm.mp4 を audio として再生し、ダメなら video フォールバックも表示
+# - 点滅排除：自動更新なし、星屑固定、同条件なら同配置（seed固定）
+# - Plotly：線トレースを集約して軽量化（None区切り）
+# - 「QUBOを使っている感」：Q行列ヒートマップ＋強い結びつき上位表示
 # ============================================================
 
 import os
@@ -17,6 +18,7 @@ import io
 import zlib
 import time
 import hashlib
+import mimetypes
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -105,7 +107,16 @@ def init_session_state():
         "keywords": [],
         "center_set": set(),
         "famous_quotes": None,          # Excel統合後の格言DB
-        "quotes_meta": {"loaded": 0},   # 表示用
+        "quotes_meta": {"loaded": 0, "source": "BASEのみ"},
+        # UI defaults（key付き）
+        "user_input_text": "人との会話に疲れた。少し迷っている。",
+        "top_n": 5,
+        "n_total": 30,
+        "noise": 0.06,
+        "jitter": 0.10,
+        "qubo_iterations": 80,
+        "star_count": 900,
+        "enable_zoom": True,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -204,8 +215,7 @@ BASE_FAMOUS_QUOTES = [
     },
 ]
 
-# 既定Excel（ローカル/同梱向け）
-# ※Streamlit Cloudでは存在しないので、基本はアップロード推奨
+# 同梱Excelを使う場合のファイル名（任意）
 EXCEL_DEFAULT_PATH = "quantum_shintaku_pack_v3_with_sense_20260213_oposite_modify (2).xlsx"
 
 def _hash_bytes(b: bytes) -> str:
@@ -213,7 +223,7 @@ def _hash_bytes(b: bytes) -> str:
 
 @st.cache_data(show_spinner=False)
 def load_quotes_from_excel_bytes(excel_bytes: bytes, file_hash: str) -> List[Dict]:
-    """Excelバイナリから QUOTES シートを読む（キャッシュ安定のため file_hash を引数に含める）"""
+    """Excelバイナリから QUOTES シートを読む（file_hashはキャッシュ安定用）"""
     if not PANDAS_AVAILABLE or not excel_bytes:
         return []
     try:
@@ -286,7 +296,6 @@ def extract_keywords(text: str, top_n: int = 5) -> List[str]:
     if found:
         return found[:top_n]
 
-    # ざっくり分割（依存増やさない方針）
     text_clean = re.sub(r"[0-9０-９、。．,.!！?？\(\)\[\]{}「」『』\"'：:;／/\\\n\r\t]+", " ", text)
     tokens = [t.strip() for t in re.split(r"\s+", text_clean) if t.strip()]
     tokens = [t for t in tokens if (len(t) >= 2 and t not in STOP_TOKENS)]
@@ -380,7 +389,7 @@ def solve_qubo_placement(
             continue
         w = words[i]
         e = energies.get(w, 0.0)
-        norm = (e - mn) / er
+        norm = (e - mn) / er if er > 0 else 0.5
         dist = 0.3 + (1.0 - norm) * 2.2
 
         theta = golden_angle * k
@@ -478,7 +487,7 @@ def build_word_network(center_words: List[str], database: List[str], n_total: in
 
 
 # ============================================================
-# 5) 格言選択（出所つき）
+# 5) 格言検索（強化版：候補ゼロを避ける）
 # ============================================================
 def select_relevant_quote(keywords: List[str], famous_quotes: List[Dict]) -> Dict[str, str]:
     if not keywords:
@@ -502,20 +511,21 @@ def select_relevant_quote(keywords: List[str], famous_quotes: List[Dict]) -> Dic
 
         qks = set()
         for k in qk:
-            kk = k.strip().lower()
+            kk = str(k).strip().lower()
             qks.add(kk)
             if len(kk) > 2:
                 for i in range(len(kk) - 1):
                     qks.add(kk[i:i+2])
 
         exact = len(ks & qks)
+
         partial = 0.0
         for a in ks:
             for b in qks:
                 if a in b or b in a:
                     partial += 0.5
 
-        text = q.get("quote", "").lower()
+        text = (q.get("quote", "") or "").lower()
         text_match = 0.0
         for a in ks:
             if len(a) >= 2 and a in text:
@@ -531,25 +541,58 @@ def select_relevant_quote(keywords: List[str], famous_quotes: List[Dict]) -> Dic
 
     return {"quote": best.get("quote", ""), "source": best.get("source", "伝統的な教え"), "note": best.get("note", "")}
 
+def _bigrams(s: str) -> set:
+    s = (s or "").strip().lower()
+    s = re.sub(r"\s+", "", s)
+    if len(s) <= 1:
+        return {s} if s else set()
+    return {s[i:i+2] for i in range(len(s)-1)}
+
 def quote_candidates_for_word(word: str, famous_quotes: List[Dict], max_n: int = 6) -> List[Dict]:
-    if not word:
+    """
+    改善版：
+    - keywords一致が弱くても、本文/keywordsの2-gram一致で近い順に出す
+    - 「候補なし」を極力なくす（常にTopNを返す）
+    """
+    if not famous_quotes:
         return []
-    w = word.strip().lower()
+    w = (word or "").strip()
+    if not w:
+        return famous_quotes[:max_n]
+
+    w2 = w.lower()
+    w_bg = _bigrams(w2)
+
     scored = []
     for q in famous_quotes:
-        ks = [k.strip().lower() for k in q.get("keywords", [])]
+        quote = (q.get("quote") or "")
+        ks = q.get("keywords") or []
+        ks_join = " ".join([str(k) for k in ks])
+
         score = 0.0
-        if w in ks:
-            score += 3.0
+
+        # 1) keywords 直接一致/部分一致
+        ks_low = [str(k).strip().lower() for k in ks]
+        if w2 in ks_low:
+            score += 5.0
         else:
-            for k in ks:
-                if w in k or k in w:
-                    score += 1.0
-        if w in (q.get("quote","").lower()):
-            score += 0.5
-        if score > 0:
-            scored.append((score, q))
-    scored.sort(key=lambda x: (-x[0], x[1].get("quote","")))
+            for k in ks_low:
+                if (w2 in k) or (k in w2):
+                    score += 2.0
+
+        # 2) 2-gram（表記ゆれ対策）
+        q_bg = _bigrams(quote) | _bigrams(ks_join)
+        inter = len(w_bg & q_bg)
+        if inter > 0:
+            score += 0.6 * inter
+
+        # 3) 文字列そのまま含まれる
+        if w2 and (w2 in quote.lower()):
+            score += 1.0
+
+        scored.append((score, q))
+
+    scored.sort(key=lambda x: (-x[0], (x[1].get("quote") or "")))
     return [q for _, q in scored[:max_n]]
 
 
@@ -566,7 +609,6 @@ def make_seed(s: str) -> int:
 st.title("量子神託（試作）— 縁の球体（QUBO × アート）")
 
 BGM_PATH = Path("assets/bgm.mp4")
-BGM_FORMAT = "audio/mp4"
 
 with st.sidebar:
     st.markdown("### 📘 格言データ（Excel/QUOTES）")
@@ -588,7 +630,6 @@ with st.sidebar:
         source_label = "アップロード"
         st.success("Excelを読み込み対象に設定しました（アップロード）")
     else:
-        # 既定ファイルが同梱されていれば読む（任意）
         if os.path.exists(EXCEL_DEFAULT_PATH):
             try:
                 with open(EXCEL_DEFAULT_PATH, "rb") as f:
@@ -600,73 +641,71 @@ with st.sidebar:
         else:
             st.caption("Excel未指定：BASE_FAMOUS_QUOTESのみで動作します。")
 
-    # Famous quotes をセッションに保持（アップロード変更時のみ更新される）
-    # ※uploaded_excel が変わったら st が再実行されるので自然に更新されます
     famous_quotes, excel_loaded = build_famous_quotes(excel_bytes)
     st.session_state["famous_quotes"] = famous_quotes
     st.session_state["quotes_meta"] = {"loaded": excel_loaded, "source": source_label}
 
-import mimetypes
+    # ------------------------------
+    # BGM（mp4再生 + フォールバック）
+    # ------------------------------
+    st.markdown("---")
+    st.markdown("### 🎵 音楽")
 
-st.markdown("---")
-st.markdown("### 🎵 音楽")
+    st.session_state["bgm_on"] = st.toggle(
+        "BGMを再生（▶を押すと鳴ります）",
+        value=st.session_state.get("bgm_on", False),
+        key="bgm_on"
+    )
 
-st.session_state["bgm_on"] = st.toggle(
-    "BGMを再生（▶を押すと鳴ります）",
-    value=st.session_state.get("bgm_on", False)
-)
+    if st.session_state["bgm_on"]:
+        if BGM_PATH.exists():
+            bgm_bytes = BGM_PATH.read_bytes()
+            mime, _ = mimetypes.guess_type(str(BGM_PATH))
+            mime = mime or "audio/mp4"
 
-if st.session_state["bgm_on"]:
-    if BGM_PATH.exists():
-        bgm_bytes = BGM_PATH.read_bytes()
+            st.caption(f"形式: {mime} / サイズ: {len(bgm_bytes)/1024/1024:.2f} MB")
 
-        # MIMEを自動判定
-        mime, _ = mimetypes.guess_type(str(BGM_PATH))
-        mime = mime or "audio/mp4"
+            try:
+                st.audio(bgm_bytes, format=mime)
+                if str(BGM_PATH).lower().endswith(".mp4"):
+                    with st.expander("🔁 再生できない場合はこちら（videoフォールバック）"):
+                        st.video(bgm_bytes, format="video/mp4")
+                st.caption("※ブラウザ制限により自動再生はできません。▶ を押してください。")
+            except Exception as e:
+                st.error(f"再生エラー: {e}")
+                st.caption("mp4で鳴らない場合は mp3 形式が最も安定します。")
+        else:
+            st.error(f"⚠ BGMが見つかりません: {BGM_PATH}（assets/bgm.mp4 をGitHubに追加してください）")
 
-        st.caption(f"形式: {mime} / サイズ: {len(bgm_bytes)/1024/1024:.2f} MB")
-
-        try:
-            # まず audio として再生
-            st.audio(bgm_bytes, format=mime)
-
-            # mp4が鳴らない環境向けフォールバック
-            if str(BGM_PATH).lower().endswith(".mp4"):
-                with st.expander("🔁 再生できない場合はこちら（videoフォールバック）"):
-                    st.video(bgm_bytes, format="video/mp4")
-
-        except Exception as e:
-            st.error(f"再生エラー: {e}")
-            st.caption("mp4で再生できない場合は mp3 形式への変換を推奨します。")
-    else:
-        st.error(f"⚠ BGMが見つかりません: {BGM_PATH}（assets/bgm.mp4 をGitHubに追加してください）")
+    # ------------------------------
+    # 入力＋パラメータ（すべて key 付き）
+    # ------------------------------
     st.markdown("---")
     st.markdown("### 今の気持ち（入力）")
-    user_input = st.text_area(
+
+    st.text_area(
         "短い一文でOK（例：人との会話に疲れた。少し迷っている。）",
-        value="人との会話に疲れた。少し迷っている。",
         height=90,
         key="user_input_text",
     )
 
     st.markdown("---")
     st.markdown("### パラメータ")
-    top_n = st.slider("抽出キーワード数", 2, 10, 5, 1)
-    n_total = st.slider("空間に出す単語数（中心＋周辺）", 15, 60, 30, 1)
 
+    st.slider("抽出キーワード数", 2, 10, st.session_state["top_n"], 1, key="top_n")
+    st.slider("空間に出す単語数（中心＋周辺）", 15, 60, st.session_state["n_total"], 1, key="n_total")
     st.caption("※点滅防止のため、自動更新（ゆらぎ）は無効化しています。")
-
-    noise = st.slider("位置のゆらぎ（再計算時のみ）", 0.00, 0.20, 0.06, 0.01)
-    jitter = st.slider("エネルギー揺らぎ", 0.00, 0.25, 0.10, 0.01)
-    qubo_iterations = st.slider("QUBO最適化の反復回数", 50, 200, 80, 10)
+    st.slider("位置のゆらぎ（再計算時のみ）", 0.00, 0.20, float(st.session_state["noise"]), 0.01, key="noise")
+    st.slider("エネルギー揺らぎ", 0.00, 0.25, float(st.session_state["jitter"]), 0.01, key="jitter")
+    st.slider("QUBO最適化の反復回数", 50, 200, st.session_state["qubo_iterations"], 10, key="qubo_iterations")
 
     st.markdown("---")
     st.markdown("### 宇宙の密度")
-    star_count = st.slider("星屑の数", 200, 2200, 900, 50)
+    st.slider("星屑の数", 200, 2200, st.session_state["star_count"], 50, key="star_count")
     st.caption("※星のまたたき（点滅）は無効化しています。")
 
     st.markdown("---")
-    enable_zoom = st.toggle("マウスホイールでズーム", value=True)
+    st.toggle("マウスホイールでズーム", value=st.session_state["enable_zoom"], key="enable_zoom")
 
     if st.button("🔄 再計算", use_container_width=True):
         st.session_state["last_params_hash"] = ""  # 強制再計算
@@ -674,14 +713,23 @@ if st.session_state["bgm_on"]:
 
 
 # ============================================================
-# 8) 再計算判定（静止表示）
+# 8) 再計算判定（静止表示 / NameError回避：session_stateから取得）
 # ============================================================
-# Excelが変わった場合も配置を変える（格言DB由来の体験が変化するため）
 quotes_meta = st.session_state.get("quotes_meta", {})
 quotes_sig = f"{quotes_meta.get('source','')}_{quotes_meta.get('loaded',0)}"
 
-params_hash = f"{user_input}|{top_n}|{n_total}|{noise}|{jitter}|{qubo_iterations}|{star_count}|{quotes_sig}"
-needs_recalc = params_hash != st.session_state["last_params_hash"]
+params_hash = (
+    f"{st.session_state.get('user_input_text','')}"
+    f"|{st.session_state.get('top_n',5)}"
+    f"|{st.session_state.get('n_total',30)}"
+    f"|{st.session_state.get('noise',0.06)}"
+    f"|{st.session_state.get('jitter',0.10)}"
+    f"|{st.session_state.get('qubo_iterations',80)}"
+    f"|{st.session_state.get('star_count',900)}"
+    f"|{quotes_sig}"
+)
+
+needs_recalc = params_hash != st.session_state.get("last_params_hash", "")
 
 
 # ============================================================
@@ -697,6 +745,13 @@ def compute_all():
         st.info("🔄 計算を開始します...")
         progress_bar = st.progress(0)
         status_text = st.empty()
+
+    user_input = st.session_state.get("user_input_text", "")
+    top_n = int(st.session_state.get("top_n", 5))
+    n_total = int(st.session_state.get("n_total", 30))
+    jitter = float(st.session_state.get("jitter", 0.10))
+    noise = float(st.session_state.get("noise", 0.06))
+    iters = int(st.session_state.get("qubo_iterations", 80))
 
     status_text.text("📝 キーワードを抽出中...")
     progress_bar.progress(10)
@@ -721,17 +776,16 @@ def compute_all():
         network["center_indices"],
         network["energies"],
         rng=rng,
-        n_iterations=qubo_iterations,
+        n_iterations=iters,
         progress_callback=update_progress,
     )
 
-    # 位置ゆらぎは再計算時だけ
     if noise > 0:
         pos = pos + rng.normal(0, noise, size=pos.shape)
 
     progress_bar.progress(100)
     status_text.text("✅ 計算完了！")
-    time.sleep(0.08)
+    time.sleep(0.06)
     progress_placeholder.empty()
 
     st.session_state["network"] = network
@@ -740,14 +794,13 @@ def compute_all():
     st.session_state["center_set"] = center_set
     st.session_state["last_params_hash"] = params_hash
 
-# 初回 or 変更時のみ計算（通常は静止）
-if (st.session_state["network"] is None) or needs_recalc:
+if (st.session_state.get("network") is None) or needs_recalc:
     compute_all()
 
-network = st.session_state["network"]
-pos = st.session_state["pos"]
-keywords = st.session_state["keywords"]
-center_set = st.session_state["center_set"]
+network = st.session_state.get("network")
+pos = st.session_state.get("pos")
+keywords = st.session_state.get("keywords", [])
+center_set = st.session_state.get("center_set", set())
 FAMOUS_QUOTES = st.session_state.get("famous_quotes") or list(BASE_FAMOUS_QUOTES)
 
 if network is None or pos is None or len(network.get("words", [])) == 0:
@@ -757,11 +810,11 @@ if network is None or pos is None or len(network.get("words", [])) == 0:
 
 # ============================================================
 # 10) Plotly描画（星屑＋縁＋球体＋ラベル）
-#     - 線を集約して軽量化（None区切り）
 # ============================================================
 fig = go.Figure()
 
-# --- 星屑（点滅排除：完全固定） ---
+# 星屑固定
+star_count = int(st.session_state.get("star_count", 900))
 star_rng = np.random.default_rng(12345)
 sx = star_rng.uniform(-3.2, 3.2, star_count)
 sy = star_rng.uniform(-2.4, 2.4, star_count)
@@ -783,7 +836,7 @@ energies = network.get("energies", {})
 center_indices = network.get("center_indices", [])
 edges = network.get("edges", [])
 
-# --- 線：中心→周辺（集約） ---
+# 線：中心→周辺（集約）
 xL, yL, zL, hoverL = [], [], [], []
 for cidx in center_indices:
     if cidx >= len(words):
@@ -810,7 +863,7 @@ fig.add_trace(go.Scatter3d(
     showlegend=False
 ))
 
-# --- 線：単語間エッジ（集約） ---
+# 線：単語間エッジ（集約）
 xE, yE, zE, hoverE = [], [], [], []
 for i, j, e in edges:
     if i in center_indices or j in center_indices:
@@ -832,7 +885,7 @@ fig.add_trace(go.Scatter3d(
     showlegend=False
 ))
 
-# --- 球体（言葉） + ラベル色分け ---
+# 球体（言葉） + ラベル色分け
 sizes, colors, labels = [], [], []
 for w in words:
     e = energies.get(w, 0.0)
@@ -854,7 +907,6 @@ for w in words:
 center_idx = [i for i, w in enumerate(labels) if w in center_set]
 other_idx  = [i for i, w in enumerate(labels) if w not in center_set]
 
-# ① それ以外（白文字）
 if other_idx:
     oi = np.array(other_idx, dtype=int)
     fig.add_trace(go.Scatter3d(
@@ -872,7 +924,6 @@ if other_idx:
         showlegend=False
     ))
 
-# ② 中心語（赤文字）
 if center_idx:
     ci = np.array(center_idx, dtype=int)
     fig.add_trace(go.Scatter3d(
@@ -890,7 +941,7 @@ if center_idx:
         showlegend=False
     ))
 
-# 中心語の“光の層”（固定）
+# 中心語の光の層（固定）
 for cidx in center_indices:
     if cidx >= len(words):
         continue
@@ -924,7 +975,7 @@ fig.update_layout(
 
 plotly_config = {
     "displayModeBar": True,
-    "scrollZoom": bool(enable_zoom),
+    "scrollZoom": bool(st.session_state.get("enable_zoom", True)),
     "displaylogo": False,
     "responsive": True,
     "toImageButtonOptions": {"format": "png", "filename": "quantum_oracle", "height": 800, "width": 1200, "scale": 1},
@@ -968,13 +1019,13 @@ with right:
         st.latex(r"E(\mathbf{x})=\sum_i Q_{ii}x_i + \sum_{i<j} Q_{ij}x_i x_j")
         st.markdown("<div class='smallnote'>※ 本アプリは「Q相互作用」を可視化・配置に利用しています（点滅なし・静止）。</div>", unsafe_allow_html=True)
 
-    # Qヒートマップ（小さめ）
+    # Qヒートマップ
     Q = network["Q"]
     hm = go.Figure(data=go.Heatmap(z=Q, showscale=True))
     hm.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=220)
     st.plotly_chart(hm, use_container_width=True, config={"displayModeBar": False, "responsive": True})
 
-    # 強い結びつき（Qが低いペア）
+    # 強い結びつき
     pairs = []
     n = Q.shape[0]
     for i in range(n):
@@ -997,24 +1048,19 @@ with right:
 
     st.markdown("---")
     st.markdown("### 👉 気になる単語から深掘り")
+
     default_word = keywords[0] if keywords else (words[0] if words else "")
-    try:
-        default_index = words.index(default_word) if default_word in words else 0
-    except Exception:
-        default_index = 0
+    default_index = 0
+    if default_word in words:
+        default_index = words.index(default_word)
 
     selected_word = st.selectbox("単語を選ぶ", options=words, index=default_index)
-    cands = quote_candidates_for_word(selected_word, FAMOUS_QUOTES)
+    cands = quote_candidates_for_word(selected_word, FAMOUS_QUOTES, max_n=6)
 
-    if cands:
-        st.markdown(f"**「{selected_word}」に関連する格言候補**")
-        for qq in cands:
-            st.markdown(
-                f"- **{qq.get('quote','')}**  \n"
-                f"  <span class='smallnote'>出所：{qq.get('source','—')}</span>",
-                unsafe_allow_html=True
-            )
-    else:
-        st.markdown("<div class='smallnote'>この単語に直接ヒットする格言は未登録です（ExcelのQUOTESを増やすと強化されます）。</div>", unsafe_allow_html=True)
+    st.markdown(f"**「{selected_word}」に関連する格言候補**")
+    for qq in cands:
+        qt = qq.get("quote", "")
+        src = qq.get("source", "—")
+        st.markdown(f"- **{qt}**  \n  <span class='smallnote'>出所：{src}</span>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
