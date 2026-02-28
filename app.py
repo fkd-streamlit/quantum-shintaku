@@ -2,12 +2,26 @@
 # ============================================================
 # app.py 量子神託（試作）— 縁の球体（QUBO × アート）
 #
-# ✅ StreamlitAPIException回避版
-# - 重要：quotes_meta / famous_quotes を st.session_state に保存しない（ローカル変数で保持）
-# - key付きwidgetの値を session_state に代入しない
-# - Excel(QUOTES) 読み込み（アップロード or 同梱）
-# - BGM assets/bgm.mp4：bytesでaudio → videoフォールバック
-# - 格言が出ない問題：候補ゼロにならないスコアリング
+# ✅ この完全版で解決すること
+# 1) StreamlitAPIException回避
+#    - 「key付きwidgetの値を st.session_state に代入しない」
+#    - 「quotes_meta / famous_quotes を st.session_state に保存しない（ローカル変数で保持）」
+#
+# 2) Excel（QUOTESワークシート）読み込み
+#    - サイドバーでアップロードして読む（推奨）
+#    - 同梱Excel（任意）も読める（ファイル名をEXCEL_DEFAULT_PATHに設定）
+#
+# 3) BGMが鳴らない問題の切り分け＆フォールバック
+#    - assets/bgm.mp3 があれば最優先（最も安定）
+#    - 次に assets/bgm.mp4 を bytesで st.audio（audio/mp4）
+#    - 鳴らない場合は st.video フォールバック
+#    - さらにダウンロードボタンで「mp4に音が入ってるか」確認可能
+#
+# 4) 格言が出ない問題を減らす
+#    - 選択語から候補が必ず返るスコアリング（ゼロ回避）
+#
+# 5) 点滅排除
+#    - 自動更新なし／星屑固定／同条件なら同配置（seed固定）
 # ============================================================
 
 import os
@@ -88,13 +102,23 @@ div[data-testid="stPlotlyChart"] > div::after{
   padding: 16px 16px 10px 16px;
   box-shadow: 0 18px 60px rgba(0,0,0,0.18);
 }
+kbd{
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-bottom-color: rgba(255,255,255,0.18);
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.9em;
+}
 </style>
 """
 st.markdown(SPACE_CSS, unsafe_allow_html=True)
 
 
 # ============================================================
-# セッション状態（widgetキーと衝突しないものだけ）
+# セッション状態（安全なものだけ）
+# - widget key と同名でも「初期化は widget 生成前」ならOK
+# - ただし widgetの値を後から st.session_state[...] に代入しない
 # ============================================================
 def init_session_state():
     defaults = {
@@ -104,7 +128,7 @@ def init_session_state():
         "keywords": [],
         "center_set": set(),
 
-        # widget defaults（keyと同名だが、初回のみsetなのでOK）
+        # widget defaults
         "bgm_on": False,
         "user_input_text": "人との会話に疲れた。少し迷っている。",
         "top_n": 5,
@@ -114,7 +138,6 @@ def init_session_state():
         "qubo_iterations": 80,
         "star_count": 900,
         "enable_zoom": True,
-
         "candidate_topn": 6,
         "show_qubo_panel": True,
     }
@@ -155,24 +178,31 @@ CATEGORIES = {
 BASE_FAMOUS_QUOTES = [
     {"keywords":["平和","世界","貢献","希望"],
      "quote":"雪の下で種は春を待っている。焦るべからず、時満ちるを待て。",
-     "source":"量子神託 試作（福田雅彦）—創作/寓話調","note":"公開用に典拠付き格言へ差し替え可"},
+     "source":"量子神託 試作（福田雅彦）—創作/寓話調",
+     "note":"公開用に典拠付き格言へ差し替え可"},
     {"keywords":["成長","努力","継続","挑戦"],
      "quote":"千里の道も一歩から。歩みを止めず、続けることに意味がある。",
-     "source":"故事成語（要典拠確認）—暫定","note":"公開前に典拠精査推奨"},
+     "source":"故事成語（要典拠確認）—暫定",
+     "note":"公開前に典拠精査推奨"},
     {"keywords":["感謝","愛","絆","つながり"],
      "quote":"一期一会。今この瞬間を大切に。すべては縁で繋がっている。",
-     "source":"一期一会（茶道思想）＋量子神託 試作（編集/意訳）","note":""},
+     "source":"一期一会（茶道思想）＋量子神託 試作（編集/意訳）",
+     "note":""},
     {"keywords":["自然","調和","バランス","流れ"],
      "quote":"水は、争わない。形にこだわらず、流れるがままに。",
-     "source":"老子『道徳経』（上善若水）—意訳/編集","note":"厳密な原文引用ではなく意訳"},
+     "source":"老子『道徳経』（上善若水）—意訳/編集",
+     "note":"厳密な原文引用ではなく意訳"},
     {"keywords":["静けさ","集中","今","瞬間"],
      "quote":"止まることで、流れが見える。動の中に静がある。",
-     "source":"量子神託 試作（福田雅彦）—創作","note":""},
+     "source":"量子神託 試作（福田雅彦）—創作",
+     "note":""},
     {"keywords":["勇気","決意","挑戦","道"],
      "quote":"道が分かれていたら、念のない方へ行け。",
-     "source":"出典要確認（流通句）—暫定","note":"公開前に典拠確定推奨"},
+     "source":"出典要確認（流通句）—暫定",
+     "note":"公開前に典拠確定推奨"},
 ]
 
+# 同梱Excel（任意）: リポジトリ直下に置く場合
 EXCEL_DEFAULT_PATH = "quantum_shintaku_pack_v3_with_sense_20260213_oposite_modify (2).xlsx"
 
 def _hash_bytes(b: bytes) -> str:
@@ -180,6 +210,7 @@ def _hash_bytes(b: bytes) -> str:
 
 @st.cache_data(show_spinner=False)
 def load_quotes_from_excel_bytes(excel_bytes: bytes, file_hash: str) -> List[Dict]:
+    """Excelバイナリから QUOTES シートを読む（file_hashはキャッシュ用）"""
     if not PANDAS_AVAILABLE or not excel_bytes:
         return []
     try:
@@ -222,30 +253,38 @@ def build_famous_quotes(excel_bytes: Optional[bytes]) -> Tuple[List[Dict], int]:
             if qt and qt not in existing:
                 fam.append(q)
                 existing.add(qt)
+
     return fam, len(excel_quotes)
 
 
 # ============================================================
 # 3) キーワード抽出（簡易）
 # ============================================================
-STOP_TOKENS = set(["した","たい","いる","こと","それ","これ","ため","よう","ので","から",
-                   "です","ます","ある","ない","そして","でも","しかし","また",
-                   "自分","私","あなた","もの","感じ","気持ち","今日"])
+STOP_TOKENS = set([
+    "した","たい","いる","こと","それ","これ","ため","よう","ので","から",
+    "です","ます","ある","ない","そして","でも","しかし","また",
+    "自分","私","あなた","もの","感じ","気持ち","今日",
+    "に","を","が","は","と","も","で","へ","や","の"
+])
 
 def extract_keywords(text: str, top_n: int = 5) -> List[str]:
     text = (text or "").strip()
     if not text:
         return ["静けさ","迷い"]
 
+    # DB語の直接ヒット優先
     found = [w for w in GLOBAL_WORDS_DATABASE if w in text]
     if found:
         return found[:top_n]
 
+    # 簡易トークン化
     text_clean = re.sub(r"[0-9０-９、。．,.!！?？\(\)\[\]{}「」『』\"'：:;／/\\\n\r\t]+", " ", text)
     tokens = [t.strip() for t in re.split(r"\s+", text_clean) if t.strip()]
     tokens = [t for t in tokens if (len(t) >= 2 and t not in STOP_TOKENS)]
+
     if not tokens:
         return ["静けさ","迷い"]
+
     tokens = sorted(tokens, key=lambda s: (-len(s), s))
     return tokens[:top_n]
 
@@ -256,6 +295,7 @@ def extract_keywords(text: str, top_n: int = 5) -> List[str]:
 def calculate_semantic_similarity(word1: str, word2: str) -> float:
     if word1 == word2:
         return 1.0
+
     common_chars = set(word1) & set(word2)
     char_sim = len(common_chars) / max(len(set(word1)), len(set(word2)), 1)
 
@@ -325,6 +365,8 @@ def solve_qubo_placement(
 
     golden_angle = np.pi * (3 - np.sqrt(5))
     k = 0
+
+    # 初期配置
     for i in range(n):
         if i in center_indices:
             continue
@@ -332,6 +374,7 @@ def solve_qubo_placement(
         e = energies.get(w, 0.0)
         norm = (e - mn) / er if er > 0 else 0.5
         dist = 0.3 + (1.0 - norm) * 2.2
+
         theta = golden_angle * k
         y = 1 - (k / float(max(1, n - len(center_indices) - 1))) * 2
         r = np.sqrt(max(0.0, 1 - y * y))
@@ -340,12 +383,14 @@ def solve_qubo_placement(
         pos[i] = [x, y * dist * 0.6, z]
         k += 1
 
+    # 疑似最適化
     for it in range(n_iterations):
         for i in range(n):
             if i in center_indices:
                 continue
             force = np.zeros(3, dtype=float)
 
+            # 中心との距離制御
             for cidx in center_indices:
                 vec = pos[cidx] - pos[i]
                 d = np.linalg.norm(vec)
@@ -354,21 +399,23 @@ def solve_qubo_placement(
                     e = energies.get(w, 0.0)
                     norm = (e - mn) / er if er > 0 else 0.5
                     target = 0.3 + (1.0 - norm) * 2.2
+
                     if d < target * 0.9:
                         force -= vec / d * 0.05
                     elif d > target * 1.1:
                         force += vec / d * 0.10
 
+            # 単語間相互作用
             for j in range(n):
                 if i == j or j in center_indices:
                     continue
                 eij = Q[i, j]
-                if eij < -0.3:
+                if eij < -0.3:  # 引力
                     vec = pos[j] - pos[i]
                     d = np.linalg.norm(vec)
                     if d > 0.01:
                         force += vec / d * (abs(eij) * 0.08)
-                elif eij > 0.2:
+                elif eij > 0.2:  # 斥力
                     vec = pos[i] - pos[j]
                     d = np.linalg.norm(vec)
                     if d > 0.01:
@@ -385,6 +432,7 @@ def build_word_network(center_words: List[str], database: List[str], n_total: in
                        rng: np.random.Generator, jitter: float) -> Dict:
     all_words = list(dict.fromkeys(center_words + database))
     energies: Dict[str, float] = {}
+
     for w in all_words:
         if w in center_words:
             energies[w] = -3.0
@@ -414,8 +462,13 @@ def build_word_network(center_words: List[str], database: List[str], n_total: in
             if e < -0.25:
                 edges.append((i, j, float(e)))
 
-    return {"words": selected, "energies": {w: energies[w] for w in selected},
-            "edges": edges, "Q": Q, "center_indices": center_indices}
+    return {
+        "words": selected,
+        "energies": {w: energies[w] for w in selected},
+        "edges": edges,
+        "Q": Q,
+        "center_indices": center_indices,
+    }
 
 
 # ============================================================
@@ -431,14 +484,15 @@ def _bigrams(s: str) -> set:
 def quote_candidates_for_word(word: str, famous_quotes: List[Dict], max_n: int = 6) -> List[Dict]:
     if not famous_quotes:
         return []
+
     w = (word or "").strip()
     if not w:
         return famous_quotes[:max_n]
 
     w2 = w.lower()
     w_bg = _bigrams(w2)
-    scored = []
 
+    scored = []
     for q in famous_quotes:
         quote = (q.get("quote") or "")
         ks = q.get("keywords") or []
@@ -447,25 +501,29 @@ def quote_candidates_for_word(word: str, famous_quotes: List[Dict], max_n: int =
         score = 0.0
         ks_low = [str(k).strip().lower() for k in ks]
 
+        # キーワード一致
         if w2 in ks_low:
-            score += 5.0
+            score += 6.0
         else:
             for k in ks_low:
                 if (w2 in k) or (k in w2):
-                    score += 2.0
+                    score += 2.5
 
+        # 2-gram類似
         q_bg = _bigrams(quote) | _bigrams(ks_join)
         inter = len(w_bg & q_bg)
         if inter > 0:
             score += 0.6 * inter
 
+        # 本文含有
         if w2 and (w2 in quote.lower()):
             score += 1.0
 
         scored.append((score, q))
 
     scored.sort(key=lambda x: (-x[0], (x[1].get("quote") or "")))
-    # ★候補ゼロ防止：必ず返す
+
+    # ★必ず返す（候補ゼロ回避）
     return [q for _, q in scored[:max_n]] if scored else famous_quotes[:max_n]
 
 def select_relevant_quote(keywords: List[str], famous_quotes: List[Dict]) -> Dict[str, str]:
@@ -489,15 +547,16 @@ def make_seed(s: str) -> int:
 # ============================================================
 st.title("量子神託（試作）— 縁の球体（QUBO × アート）")
 
-BGM_PATH = Path("assets/bgm.mp4")
+MP3_PATH = Path("assets/bgm.mp3")
+MP4_PATH = Path("assets/bgm.mp4")
 
 with st.sidebar:
-    st.markdown("### 📘 格言データ（Excel/QUOTES）")
+    # ---------- Excel ----------
+    st.markdown("### 📘 格言データ（Excel / QUOTES）")
     if not PANDAS_AVAILABLE:
         st.error("pandas が利用できないためExcel読み込みが無効です。requirements.txt に pandas と openpyxl を入れてください。")
 
-    uploaded_excel = st.file_uploader("QUOTESワークシート入りExcelを選択", type=["xlsx"])
-
+    uploaded_excel = st.file_uploader("QUOTESワークシート入りExcelを選択（推奨）", type=["xlsx"])
     excel_bytes: Optional[bytes] = None
     source_label = "BASEのみ"
 
@@ -516,23 +575,51 @@ with st.sidebar:
         else:
             st.caption("Excel未指定：BASEのみで動作します。")
 
-    # ★ここで作った値は「ローカル変数」で保持（session_stateへ保存しない）
+    # ★ここで作る格言DBはローカル変数（session_stateに保存しない）
     famous_quotes, excel_loaded = build_famous_quotes(excel_bytes)
     quotes_sig = f"{source_label}_{excel_loaded}"
 
+    # ---------- BGM ----------
     st.markdown("---")
-    st.markdown("### 🎵 音楽")
+    st.markdown("### 🎵 音楽（BGM）")
     st.toggle("BGMを再生（▶を押すと鳴ります）", key="bgm_on")
-    if st.session_state.get("bgm_on", False):
-        if BGM_PATH.exists():
-            bgm_bytes = BGM_PATH.read_bytes()
-            st.audio(bgm_bytes, format="audio/mp4")
-            with st.expander("鳴らない場合はこちら（videoフォールバック）"):
-                st.video(bgm_bytes, format="video/mp4")
-            st.caption("※ブラウザ制限により自動再生はできません。▶を押してください。")
-        else:
-            st.error("⚠ assets/bgm.mp4 が見つかりません（GitHubに追加してください）")
 
+    if st.session_state.get("bgm_on", False):
+        # 最優先：mp3（最も安定）
+        if MP3_PATH.exists():
+            b = MP3_PATH.read_bytes()
+            st.caption(f"再生: {MP3_PATH} / {len(b)/1024/1024:.2f}MB")
+            st.audio(b, format="audio/mpeg")
+            st.caption("※ブラウザ制限により自動再生はできません。▶ を押してください。")
+
+        # 次：mp4
+        elif MP4_PATH.exists():
+            b = MP4_PATH.read_bytes()
+            mime, _ = mimetypes.guess_type(str(MP4_PATH))
+            st.caption(f"再生: {MP4_PATH} / 推定MIME: {mime} / {len(b)/1024/1024:.2f}MB")
+
+            # audio
+            st.audio(b, format="audio/mp4")
+
+            # video fallback
+            with st.expander("🔧 鳴らない場合はこちら（videoで再生）"):
+                st.video(b, format="video/mp4")
+
+            # download check
+            with st.expander("🔧 音声が入っているか確認（ダウンロード）"):
+                st.download_button(
+                    "bgm.mp4 をダウンロードして確認",
+                    data=b,
+                    file_name="bgm.mp4",
+                    mime="video/mp4"
+                )
+
+            st.caption("※PCで再生して音があるのにWebで鳴らない場合、コーデック非対応の可能性が高いです。mp3化が最短です。")
+
+        else:
+            st.error("⚠ assets/bgm.mp3 または assets/bgm.mp4 が見つかりません（GitHubに追加してください）")
+
+    # ---------- Input ----------
     st.markdown("---")
     st.markdown("### 今の気持ち（入力）")
     st.text_area("短い一文でOK", height=90, key="user_input_text")
@@ -562,7 +649,7 @@ with st.sidebar:
 
 
 # ============================================================
-# 8) 再計算判定
+# 8) 再計算判定（同条件なら同配置）
 # ============================================================
 params_hash = (
     f"{st.session_state.get('user_input_text','')}"
@@ -632,6 +719,7 @@ def compute_all():
     st.session_state["center_set"] = center_set
     st.session_state["last_params_hash"] = params_hash
 
+
 if (st.session_state.get("network") is None) or needs_recalc:
     compute_all()
 
@@ -646,16 +734,16 @@ if network is None or pos is None or not network.get("words"):
 
 
 # ============================================================
-# 10) Plotly描画
+# 10) Plotly描画（星屑＋縁＋球体＋ラベル）
 # ============================================================
 fig = go.Figure()
 
+# 星屑固定（点滅なし）
 star_count = int(st.session_state.get("star_count", 900))
 star_rng = np.random.default_rng(12345)
 sx = star_rng.uniform(-3.2, 3.2, star_count)
 sy = star_rng.uniform(-2.4, 2.4, star_count)
 sz = star_rng.uniform(-2.0, 2.0, star_count)
-
 alpha = np.full(star_count, 0.22, dtype=float)
 star_size = star_rng.uniform(1.0, 2.4, star_count)
 star_colors = [f"rgba(255,255,255,{a})" for a in alpha]
@@ -720,7 +808,7 @@ fig.add_trace(go.Scatter3d(
     showlegend=False
 ))
 
-# 球体＋ラベル
+# 球体＋ラベル（中心語=赤文字）
 sizes, colors, labels = [], [], []
 for w in words:
     e = energies.get(w, 0.0)
@@ -731,7 +819,12 @@ for w in words:
     else:
         en = min(1.0, abs(e) / 3.0)
         sizes.append(12 + int(8 * en))
-        colors.append("rgba(255,255,255,0.60)")
+        if e < -1.5:
+            colors.append("rgba(180,220,255,0.85)")
+        elif e < -0.5:
+            colors.append("rgba(220,240,255,0.75)")
+        else:
+            colors.append("rgba(255,255,255,0.60)")
         labels.append(w)
 
 center_idx = [i for i, w in enumerate(labels) if w in center_set]
@@ -745,7 +838,11 @@ if other_idx:
         text=[labels[i] for i in oi],
         textposition="top center",
         textfont=dict(size=18, color="rgba(255,255,255,1.0)"),
-        marker=dict(size=[sizes[i] for i in oi], color=[colors[i] for i in oi]),
+        marker=dict(
+            size=[sizes[i] for i in oi],
+            color=[colors[i] for i in oi],
+            line=dict(width=1, color="rgba(0,0,0,0.10)")
+        ),
         hovertemplate="<b>%{text}</b><extra></extra>",
         showlegend=False
     ))
@@ -758,8 +855,11 @@ if center_idx:
         text=[labels[i] for i in ci],
         textposition="top center",
         textfont=dict(size=24, color="rgba(255,80,80,1.0)"),
-        marker=dict(size=[sizes[i] for i in ci], color=[colors[i] for i in ci],
-                    line=dict(width=2, color="rgba(255,80,80,0.8)")),
+        marker=dict(
+            size=[sizes[i] for i in ci],
+            color=[colors[i] for i in ci],
+            line=dict(width=2, color="rgba(255,80,80,0.8)")
+        ),
         hovertemplate="<b>%{text}</b><br>中心語<extra></extra>",
         showlegend=False
     ))
@@ -783,10 +883,12 @@ plotly_config = {
     "displaylogo": False,
     "responsive": True,
     "doubleClick": "reset",
+    "toImageButtonOptions": {"format": "png", "filename": "quantum_oracle", "height": 800, "width": 1200, "scale": 1},
 }
 
+
 # ============================================================
-# 11) レイアウト
+# 11) レイアウト（左：宇宙 / 右：格言）
 # ============================================================
 left, right = st.columns([2.0, 1.0], gap="large")
 
@@ -799,7 +901,22 @@ with right:
 
     st.markdown("### 📊 現在の状態")
     st.markdown(f"**核（推定キーワード）**：`{', '.join(keywords)}`")
+    st.markdown(f"**計算済み単語数**: {len(words)}語")
+    st.markdown(f"**接続数**: {len(edges)}本")
+    if energies:
+        st.markdown(f"**エネルギー範囲**: {min(energies.values()):.2f} ～ {max(energies.values()):.2f}")
+
     st.markdown(f"**格言DB**: {len(famous_quotes)}件（Excel読込: {excel_loaded} / {source_label}）")
+
+    if st.session_state.get("show_qubo_panel", True):
+        st.markdown("---")
+        st.markdown("### 🧠 QUBOがどこに効いているか")
+        st.markdown(
+            "- 単語同士の相互作用を **Q行列** として計算し、結びつき（低エネルギー）ほど近づくように3D配置を調整しています。\n"
+            "- 表示の“縁（線）”は、Qが一定以下（結びつきが強い）なペアを描画しています。"
+        )
+        with st.expander("QUBOの式（概念）", expanded=False):
+            st.latex(r"E(\mathbf{x})=\sum_i Q_{ii}x_i + \sum_{i<j} Q_{ij}x_i x_j")
 
     st.markdown("---")
     st.markdown("### 先人のことば（自動）")
@@ -818,7 +935,13 @@ with right:
     topn = int(st.session_state.get("candidate_topn", 6))
     cands = quote_candidates_for_word(selected_word, famous_quotes, max_n=topn)
 
+    st.markdown(f"**「{selected_word}」に関連する候補**")
     for qq in cands:
-        st.markdown(f"- **{qq.get('quote','')}**  \n  <span class='smallnote'>出所：{qq.get('source','—')}</span>", unsafe_allow_html=True)
+        qt = qq.get("quote", "")
+        src = qq.get("source", "—")
+        note = qq.get("note", "")
+        st.markdown(f"- **{qt}**  \n  <span class='smallnote'>出所：{src}</span>", unsafe_allow_html=True)
+        if note:
+            st.markdown(f"<div class='smallnote'>※ {note}</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
